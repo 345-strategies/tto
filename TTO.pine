@@ -1,0 +1,1343 @@
+//@version=6
+// TheStrat TTO: Triangle They Out - v1.3.0
+//
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// TTO marks one entry pattern. A pullback leaves a point of structure; a
+// later bar sweeps it (the stop run that takes "them" out) and closes back
+// inside; the entry is a break of that sweep bar's opposite extreme, and
+// the sweep extreme is the stop reference. Display and alerts only: no
+// orders, no strategy.
+//
+// HOW A SETUP FORMS (bullish; bearish is the mirror)
+//   Structure  Every confirmed three-bar fractal low on a watched timeframe
+//              joins that timeframe's memory and stays there until it is
+//              broken, or swept and resolved. Newer lows do not erase it.
+//   Flush      A bar trades below a remembered low. The running low is the
+//              flush extreme; every new low restarts the reclaim clock.
+//   Reclaim    Within the reclaim window, a close back above a swept low
+//              arms the setup on the deepest low reclaimed. Trigger = the
+//              reclaiming bar's high. Stop reference = the flush extreme,
+//              which becomes structure itself (sweep-born).
+//   Extension  While armed, a deeper low that still closes above the level
+//              moves the trigger and the stop reference to that bar.
+//   Kill       A close back below the armed level.
+//   Entry      Price trades through the trigger.
+//   x2         The swept level was itself an older flush extreme, at least
+//              the minimum age: a sweep of a sweep. The entry text says x2.
+//   Expiry     No reclaim inside the window: every unreclaimed level beyond
+//              the flush extreme is broken and forgotten.
+//
+// TIMEFRAMES
+//   Four slots (default 5m 15m 30m 1H). Each runs its own detector and
+//   fair value gaps on bars built from one stream at the finest slot. The
+//   chart timeframe is only zoom: every chart shows the same setups at the
+//   same times. A slot above 30m that sits strictly between the stream and
+//   the chart timeframe can't be built honestly and is switched off; the
+//   status tag lists it. Line width and marker size grow with slot rank.
+//   By default a slot finer than the chart is hidden (marks and alerts),
+//   so a Daily chart is not buried in 5m entries. Hidden slots still run:
+//   what a slot shows never depends on the chart it is viewed from.
+//
+// FILTERS (notation and alerts only; the detectors run unfiltered)
+//   Fair value gap  The sweep extreme sits inside a live same-direction gap
+//                   of the setup's own slot or a higher one, never lower.
+//   Continuity      Every enabled continuity timeframe is on the trade's
+//                   side of its open (TheStrat Suite's FTFC rule), at the
+//                   sweep and again at the entry.
+//   ACT direction   ACT's trend direction agrees, at the sweep and the entry:
+//                   price above (below) both of its higher Direction
+//                   timeframes' opens, or a counter-trend break when
+//                   they disagree. Built in; ACT need not be loaded.
+//
+// NO REPAINT
+//   State advances on confirmed bars only. Entries are tested on every
+//   stream bar, so the triangle sits on the bar that actually crossed.
+//   Alerts are "live" (the moment price crosses) when the chart's bars are
+//   the stream, and "bar close" when the chart is coarser; the status tag
+//   says which. With a filter on, a live alert reads the filter at the
+//   crossing and the marker reads it at the bar's close, so inside one bar
+//   the two can disagree. With every filter off they cannot.
+//
+// Version history: CHANGELOG.md in the repository.
+
+indicator("TheStrat TTO: Triangle They Out - v1.3.0", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+
+const string VERSION = "1.3.0"
+
+// ============================================================================
+// Inputs
+// ============================================================================
+
+const string grpTF    = "Timeframes"
+const string grpDet   = "Detection"
+const string grpGap   = "Filters - Fair Value Gap"
+const string grpTfc   = "Filters - Timeframe Continuity"
+const string grpAct   = "Filters - ACT Direction"
+const string grpStyle = "Style - Colors"
+const string grpDisp  = "Display - Status Tag"
+const string grpAlert = "Alerts"
+const string grpDiag  = "Advanced - Diagnostics"
+
+const string tipSlot = "Each enabled slot watches one timeframe and runs its own TTO detector and fair value gaps on it. The chart timeframe is only zoom: every chart shows the same setups at the same times. Line width and triangle size grow with the slot's rank, finest thinnest. A slot above 30m that sits between the finest slot and the chart timeframe can't be built and is switched off; the status tag lists it."
+bool   s1OnInput = input.bool(true, "", inline = "s1", group = grpTF)
+string s1TfInput = input.timeframe("5", "Slot 1", inline = "s1", group = grpTF, tooltip = tipSlot)
+bool   s2OnInput = input.bool(true, "", inline = "s2", group = grpTF)
+string s2TfInput = input.timeframe("15", "Slot 2", inline = "s2", group = grpTF, tooltip = tipSlot)
+bool   s3OnInput = input.bool(true, "", inline = "s3", group = grpTF)
+string s3TfInput = input.timeframe("30", "Slot 3", inline = "s3", group = grpTF, tooltip = tipSlot)
+bool   s4OnInput = input.bool(true, "", inline = "s4", group = grpTF)
+string s4TfInput = input.timeframe("60", "Slot 4", inline = "s4", group = grpTF, tooltip = tipSlot)
+bool   hideFinerInput = input.bool(true, "Hide slots finer than the chart", group = grpTF, tooltip = "On: a slot shows its marks and sends its alerts only on charts at or below its own timeframe. A 5m chart shows all four default slots, a 1H chart only the 1H slot, a Daily chart none. Hidden slots keep running, so whatever a slot does show is identical on every chart. Off: every slot shows on every chart.")
+
+bool showBullInput = input.bool(true, "Bullish TTOs", group = grpDet, tooltip = "A low swept and reclaimed; entry over the reclaiming bar's high, stop reference at the sweep low. Off switches the bullish detector off entirely.")
+bool showBearInput = input.bool(true, "Bearish TTOs", group = grpDet, tooltip = "A high swept and reclaimed; entry under the reclaiming bar's low, stop reference at the sweep high. Off switches the bearish detector off entirely.")
+int  reclaimWindowInput = input.int(2, "Reclaim window (slot bars)", minval = 0, maxval = 10, group = grpDet, tooltip = "How many of the slot's bars after the sweep extreme a close may take to get back over (under) the swept level. 0 = classic: the sweep bar itself must close back inside. Every new extreme restarts the count. Above 0 also admits failed breakouts that close back inside a bar or two later.")
+int  sweep2AgeInput     = input.int(8, "Sweep-of-sweep minimum age (slot bars)", minval = 0, maxval = 100, group = grpDet, tooltip = "When the swept level was itself an earlier sweep extreme, the entry is marked x2 (sweep of a sweep) only if that level is at least this many of its slot's bars old. Younger ones grade as ordinary TTOs.")
+bool showYoungResweepsInput = input.bool(true, "Show quick re-sweeps", group = grpDet, tooltip = "Off hides setups whose swept level is a sweep extreme younger than the minimum age above: chop re-running its own recent lows or highs. x2 setups and setups on ordinary fractal levels always show.")
+
+bool  fvgOnInput        = input.bool(true, "Only show TTOs inside a fair value gap", group = grpGap, tooltip = "A setup shows only when its sweep extreme sits inside a live same-direction fair value gap on its own slot or a higher one, never a lower one. A gap dies the moment price trades fully through it. Off: every setup shows.")
+float fvgThresholdInput = input.float(0, "Minimum gap size %", minval = 0, step = 0.05, group = grpGap, tooltip = "Gap height as a percent of price. 0 keeps every gap.")
+bool  fvgBoxInput       = input.bool(true, "Draw qualifying gaps", group = grpGap, active = fvgOnInput, tooltip = "Each qualifying slot draws its gap as a soft box labeled with the slot timeframe, extended to the latest qualifying sweep. Stacked boxes = gaps nested across timeframes.")
+bool  fvgSessionInput   = input.bool(false, "Ignore gaps across days", group = grpGap, tooltip = "On skips gaps whose three bars don't fall on the same calendar day in the exchange time zone. Off (default): overnight and weekend gaps count.")
+
+bool   tfcOnInput  = input.bool(true, "Filter by timeframe continuity", group = grpTfc, tooltip = "Bullish setups show only while every enabled timeframe below trades above its open; bearish only while every one is at or below it. Checked at the sweep and again at the entry. Timeframes lower than the chart are skipped.")
+bool   tfc1OnInput = input.bool(true, "", inline = "tfc1", group = grpTfc, active = tfcOnInput)
+string tfc1TfInput = input.timeframe("D", "Timeframe 1", inline = "tfc1", group = grpTfc, active = tfcOnInput)
+bool   tfc2OnInput = input.bool(false, "", inline = "tfc2", group = grpTfc, active = tfcOnInput)
+string tfc2TfInput = input.timeframe("60", "Timeframe 2", inline = "tfc2", group = grpTfc, active = tfcOnInput)
+bool   tfc3OnInput = input.bool(false, "", inline = "tfc3", group = grpTfc, active = tfcOnInput)
+string tfc3TfInput = input.timeframe("W", "Timeframe 3", inline = "tfc3", group = grpTfc, active = tfcOnInput)
+
+enum ActLadderSel
+    Auto     = "Auto"
+    Scalp    = "Scalp: 15m 30m 1H 4H D"
+    DayTrade = "Day Trade: 30m 1H 4H D W"
+    Swing    = "Swing: 4H D W M Q"
+    Position = "Position: D W M Q Y"
+
+string actFilterInput = input.string("Off", "Filter by ACT trend direction", options = ["Off", "Trend or counter-trend", "Main trend only"], group = grpAct, tooltip = "Show a setup only when ACT (Alignment-Colored Trend) reads a trend in its direction, at the sweep and at the entry. ACT's logic is built in; it does not need to be on the chart. Main trend: price is above (below) the opens of both of the ladder's Direction timeframes (D and W on Day Trade). Counter-trend: those two disagree and the State 2 timeframe (4H on Day Trade) has broken up (down). No trend blocks both sides. On an ACT chart these are green/red, blue/purple and grey candles.")
+ActLadderSel actLadderInput = input.enum(ActLadderSel.Auto, "ACT ladder", group = grpAct, active = actFilterInput != "Off", tooltip = "Which five timeframes ACT reads trend from. Auto picks them from the chart timeframe exactly as ACT's Auto does; if you run ACT, match its Ladder setting. Where the ladder can't run on the chart, the filter stands down and the status tag says act n/a.")
+
+color bullEntryColorInput = input.color(#4caf50, "Bullish", group = grpStyle, tooltip = "Bullish entry triangles, trigger lines and gap boxes.")
+color bearEntryColorInput = input.color(#f23645, "Bearish", group = grpStyle, tooltip = "Bearish entry triangles, trigger lines and gap boxes.")
+string markerInput = input.string("Triangle", "Entry marker", options = ["Triangle", "Arrow", "Label", "Diamond", "Circle"], group = grpStyle, tooltip = "The shape printed at an entry: below the bar for longs, above for shorts. The text beside it is the slot timeframe, plus x2 for a sweep of a sweep. Label puts that text inside a filled tag.")
+string markerSizeInput = input.string("Auto", "Marker size", options = ["Auto", "Tiny", "Small", "Normal", "Large"], group = grpStyle, tooltip = "Size of the entry marker and its text. Auto scales by slot: tiny for the two finest slots, small above. Fixed sizes apply to every slot.")
+color levelColorInput     = input.color(color.new(#9c9c9c, 30), "Swept level", group = grpStyle, tooltip = "The line from the swept structure to the sweep bar. Neutral by default: it marks structure, not direction.")
+
+bool   showTagInput = input.bool(true, "Show status tag", group = grpDisp, tooltip = "Version, stream timeframe, alert mode (live or bar close), active filters and any switched-off slots, so a screenshot says how the chart was set up.")
+string tagPosInput  = input.string("Top Right", "Position", options = ["Top Right", "Top Center", "Top Left", "Bottom Right", "Bottom Left"], group = grpDisp, active = showTagInput)
+
+bool alertSweepInput = input.bool(true, "Alert on sweeps (setup armed)", group = grpAlert, tooltip = "Create ONE TradingView alert on this indicator with the condition 'Any alert() function call' to receive every sweep and entry shown on the chart. Filters and toggles here are respected. Sweep alerts come at the slot bar's close.")
+bool alertEntryInput = input.bool(true, "Alert on entries", group = grpAlert, tooltip = "Fires the moment price crosses the trigger when the chart's bars are the finest slot (status tag: alerts live), otherwise at the chart bar's close (alerts bar close). The message carries the trigger and the stop reference.")
+
+bool  showAllGapsInput   = input.bool(false, "Show all live gaps", group = grpDiag, tooltip = "Draw every gap on every slot as it forms, faint and labeled, frozen where it dies. Heavy on drawings: a study lens, not a default.")
+bool  showRejectedInput  = input.bool(false, "Mark filtered-out sweeps", group = grpDiag, tooltip = "A grey x with the reason (tfc, act, young, gap) wherever a detector armed a sweep that the filters hid.")
+bool  showArmArrowsInput = input.bool(false, "Show armed-setup arrows", group = grpDiag, tooltip = "An arrow on every shown sweep. Off by default: the dotted trigger line already marks an armed setup and ends where it resolves.")
+color structColorInput   = input.color(#9c9c9c, "Arrow", inline = "arw", group = grpDiag, active = showArmArrowsInput)
+color sweep2ColorInput   = input.color(#ffffff, "x2 arrow", inline = "arw", group = grpDiag, active = showArmArrowsInput)
+
+
+// ============================================================================
+// Feed regime
+// ============================================================================
+
+int chartTfSeconds = timeframe.in_seconds(timeframe.period)
+int s1Sec = timeframe.in_seconds(s1TfInput)
+int s2Sec = timeframe.in_seconds(s2TfInput)
+int s3Sec = timeframe.in_seconds(s3TfInput)
+int s4Sec = timeframe.in_seconds(s4TfInput)
+
+// Display names for marks, boxes, alerts and the tag: 5m, 1H, 4H, D, W.
+tfName(string tf) =>
+    int sec = timeframe.in_seconds(tf)
+    sec < 60 ? tf : sec < 3600 ? str.tostring(int(sec / 60)) + "m" : sec < 86400 and sec % 3600 == 0 ? str.tostring(int(sec / 3600)) + "H" : tf
+
+string s1Name = tfName(s1TfInput)
+string s2Name = tfName(s2TfInput)
+string s3Name = tfName(s3TfInput)
+string s4Name = tfName(s4TfInput)
+
+// v1.3.0: a slot finer than the chart is hidden - a notation gate like the
+// filters. The machines still run, so gap qualification and every shown
+// setup are the same on every chart.
+slotVisible(int sec) => not hideFinerInput or sec >= chartTfSeconds
+
+// The unit stream runs at the finest granularity any slot needs, or the
+// chart's own bars when they are finer than every slot.
+int unitSec = chartTfSeconds
+string unitTf = timeframe.period
+if s1OnInput and s1Sec < unitSec
+    unitSec := s1Sec
+    unitTf := s1TfInput
+if s2OnInput and s2Sec < unitSec
+    unitSec := s2Sec
+    unitTf := s2TfInput
+if s3OnInput and s3Sec < unitSec
+    unitSec := s3Sec
+    unitTf := s3TfInput
+if s4OnInput and s4Sec < unitSec
+    unitSec := s4Sec
+    unitTf := s4TfInput
+
+bool unitsNative = unitSec == chartTfSeconds
+
+// Slot usability: served period times work at or above the chart, the
+// finest slot IS the unit stream, and clock flooring is honest only to 30m
+// (session anchors break hourly floors). A slot above 30m strictly between
+// the unit and chart timeframes is inactive.
+bool s1Usable = s1OnInput and (s1Sec >= chartTfSeconds or s1Sec == unitSec or s1Sec <= 1800)
+bool s2Usable = s2OnInput and (s2Sec >= chartTfSeconds or s2Sec == unitSec or s2Sec <= 1800)
+bool s3Usable = s3OnInput and (s3Sec >= chartTfSeconds or s3Sec == unitSec or s3Sec <= 1800)
+bool s4Usable = s4OnInput and (s4Sec >= chartTfSeconds or s4Sec == unitSec or s4Sec <= 1800)
+
+// Notation rank among enabled slots: 1 = finest. Ties share a rank.
+rankFor(int sec) =>
+    int r = 1
+    if s1OnInput and s1Sec < sec
+        r += 1
+    if s2OnInput and s2Sec < sec
+        r += 1
+    if s3OnInput and s3Sec < sec
+        r += 1
+    if s4OnInput and s4Sec < sec
+        r += 1
+    r
+
+int s1Rank = rankFor(s1Sec)
+int s2Rank = rankFor(s2Sec)
+int s3Rank = rankFor(s3Sec)
+int s4Rank = rankFor(s4Sec)
+
+rankSize(int rank) =>
+    rank >= 3 ? size.small : size.tiny
+
+// Entry marker size: Auto keeps the rank scaling above; a fixed choice
+// applies to every slot.
+entrySize(int rank) =>
+    switch markerSizeInput
+        "Tiny"   => size.tiny
+        "Small"  => size.small
+        "Normal" => size.normal
+        "Large"  => size.large
+        => rankSize(rank)
+
+entryStyle(bool isBull) =>
+    switch markerInput
+        "Arrow"   => isBull ? label.style_arrowup : label.style_arrowdown
+        "Label"   => isBull ? label.style_label_up : label.style_label_down
+        "Diamond" => label.style_diamond
+        "Circle"  => label.style_circle
+        => isBull ? label.style_triangleup : label.style_triangledown
+
+// Text inside a filled Label reads in white; beside a glyph, in the side color.
+entryTextColor(bool isBull) =>
+    markerInput == "Label" ? color.white : color.new(isBull ? bullEntryColorInput : bearEntryColorInput, 30)
+
+// Clamped outside intrabar use, same pattern as before.
+string reqTf = unitsNative ? timeframe.period : unitTf
+[ltfHighs, ltfLows, ltfCloses, ltfTimes] = request.security_lower_tf(syminfo.tickerid, reqTf, [high, low, close, time])
+
+// Served period start per slot, period-stable under lookahead_on. Valid as
+// a bucket id whenever the slot is at or above the chart timeframe.
+int s1Served = request.security(syminfo.tickerid, s1TfInput, time, lookahead = barmerge.lookahead_on)
+int s2Served = request.security(syminfo.tickerid, s2TfInput, time, lookahead = barmerge.lookahead_on)
+int s3Served = request.security(syminfo.tickerid, s3TfInput, time, lookahead = barmerge.lookahead_on)
+int s4Served = request.security(syminfo.tickerid, s4TfInput, time, lookahead = barmerge.lookahead_on)
+
+// ============================================================================
+// Timeframe continuity
+// ============================================================================
+
+float tfc1Open = request.security(syminfo.tickerid, tfc1TfInput, open, lookahead = barmerge.lookahead_on)
+float tfc2Open = request.security(syminfo.tickerid, tfc2TfInput, open, lookahead = barmerge.lookahead_on)
+float tfc3Open = request.security(syminfo.tickerid, tfc3TfInput, open, lookahead = barmerge.lookahead_on)
+
+bool tfc1Active = tfc1OnInput and timeframe.in_seconds(tfc1TfInput) >= chartTfSeconds
+bool tfc2Active = tfc2OnInput and timeframe.in_seconds(tfc2TfInput) >= chartTfSeconds
+bool tfc3Active = tfc3OnInput and timeframe.in_seconds(tfc3TfInput) >= chartTfSeconds
+
+// Continuity for one slot bar's close, per the Suite's calculateFTFC: close
+// above the served open kills bearish continuity, at-or-below kills bullish
+// - a flat period counts down. Slots without served data vote for neither.
+tfcState(float unitClose) =>
+    bool bullOk = true
+    bool bearOk = true
+    if tfcOnInput
+        if tfc1Active and not na(tfc1Open)
+            if unitClose > tfc1Open
+                bearOk := false
+            else
+                bullOk := false
+        if tfc2Active and not na(tfc2Open)
+            if unitClose > tfc2Open
+                bearOk := false
+            else
+                bullOk := false
+        if tfc3Active and not na(tfc3Open)
+            if unitClose > tfc3Open
+                bearOk := false
+            else
+                bullOk := false
+    [bullOk, bearOk]
+
+// ============================================================================
+// ACT direction (v1.2.0)
+// ============================================================================
+// Ported from ACT v1.0.0 (345-strategies/act, ACT.pine, MPL-2.0): the ladder,
+// bar classification, higher-timeframe windows, direction and stance - the
+// parts that decide a candle's COLOR. Shade, grade, cascade and the index
+// streams only decide how solid a candle is, so they are not here; nothing
+// below requests an index. Kept verbatim where it was ported, so the filter
+// reads exactly the candle ACT paints with the same ladder setting.
+//
+// actCode per chart bar: 1 green, -1 red, 2 blue (counter-trend bull),
+// -2 purple (counter-trend bear), 0 grey.
+
+int e_sec = chartTfSeconds
+int lad_auto = e_sec < 60 ? 0 : e_sec <= 3600 ? 1 : e_sec <= 86400 ? 2 : 3
+int lad = switch actLadderInput
+    ActLadderSel.Scalp    => 0
+    ActLadderSel.DayTrade => 1
+    ActLadderSel.Swing    => 2
+    ActLadderSel.Position => 3
+    => lad_auto
+
+string tf_s1 = switch lad
+    0 => "30"
+    1 => "60"
+    2 => "D"
+    => "W"
+string tf_s2 = switch lad
+    0 => "60"
+    1 => "240"
+    2 => "W"
+    => "M"
+string tf_d1 = switch lad
+    0 => "240"
+    1 => "D"
+    2 => "M"
+    => "3M"
+string tf_d2 = switch lad
+    0 => "D"
+    1 => "W"
+    2 => "3M"
+    => "12M"
+
+// A ladder runs on charts up to its State 1 timeframe. Where it can't, the
+// filter stands down (passes everything) and the corner tag says so.
+bool ladder_ok = e_sec <= timeframe.in_seconds(tf_s1)
+
+f_eff(string tf) => timeframe.in_seconds(tf) >= e_sec ? tf : timeframe.period
+
+string tf_s1_e = f_eff(tf_s1)
+string tf_s2_e = f_eff(tf_s2)
+string tf_d1_e = f_eff(tf_d1)
+string tf_d2_e = f_eff(tf_d2)
+
+f_classify_full(float c1_h, float c1_l, float c1_o, float c1_c,
+           float cc_h, float cc_l, float cc_o, float cc_c) =>
+    string btype = "n/a"
+    bool b_inside = false
+    bool if_bull = false
+    bool if_bear = false
+    bool fail_bull = false
+    bool fail_bear = false
+    if na(c1_h) or na(cc_h)
+        [btype, b_inside, if_bull, if_bear, fail_bull, fail_bear]
+    else
+        brk_h = cc_h > c1_h
+        brk_l = cc_l < c1_l
+        above_open = cc_c > cc_o
+        if brk_h and brk_l
+            closed_inside = cc_c <= c1_h and cc_c >= c1_l
+            if closed_inside
+                if above_open
+                    btype := "F3u"
+                    fail_bull := true
+                else
+                    btype := "F3d"
+                    fail_bear := true
+            else
+                if cc_c > c1_h
+                    btype := "3u"
+                    if_bull := true
+                else
+                    btype := "3d"
+                    if_bear := true
+        else if brk_h and not brk_l
+            inside_c1 = cc_c <= c1_h and cc_c >= c1_l
+            if inside_c1
+                btype := "F2u"
+                fail_bull := true
+            else
+                btype := "2u"
+                if_bull := true
+        else if brk_l and not brk_h
+            inside_c1 = cc_c <= c1_h and cc_c >= c1_l
+            if inside_c1
+                btype := "F2d"
+                fail_bear := true
+            else
+                btype := "2d"
+                if_bear := true
+        else
+            b_inside := true
+            btype := above_open ? "1u" : "1d"
+        [btype, b_inside, if_bull, if_bear, fail_bull, fail_bear]
+
+string act_auto_set = syminfo.type == "crypto" ? "Crypto" : syminfo.type == "futures" ? "Futures" : "ETFs"
+int et_h = hour(time, "America/New_York")
+int bkt_4h = act_auto_set == "Futures" ? math.floor(((et_h + 6) % 24) / 4) : math.floor(et_h / 4)
+bool use_4h_anchor = (act_auto_set == "Futures" or act_auto_set == "Crypto") and e_sec < 14400
+bool new_4h_anchor = bkt_4h != bkt_4h[1] or time - time[1] >= 14400000
+
+f_is_new(string tf) =>
+    bool chg = ta.change(time(tf)) != 0
+    tf == "240" and use_4h_anchor ? new_4h_anchor : chg
+
+f_htf_bar(bool new_bar, float src_o, float src_h, float src_l, float src_c) =>
+    var bool  started = false
+    var float htf_o = na, var float htf_h = na
+    var float htf_l = na, var float htf_c = na
+    var float htf_po = na, var float htf_ph = na
+    var float htf_pl = na, var float htf_pc = na
+    var float htf_p2h = na, var float htf_p2l = na
+    var int   htf_t = na
+    if new_bar or not started
+        started := true
+        htf_p2h := htf_ph, htf_p2l := htf_pl
+        htf_po := htf_o, htf_ph := htf_h, htf_pl := htf_l, htf_pc := htf_c
+        htf_t := time, htf_o := src_o, htf_h := src_h, htf_l := src_l
+    else
+        htf_h := na(src_h) ? htf_h : na(htf_h) ? src_h : math.max(htf_h, src_h)
+        htf_l := na(src_l) ? htf_l : na(htf_l) ? src_l : math.min(htf_l, src_l)
+    htf_c := src_c
+    [htf_o, htf_h, htf_l, htf_c, htf_ph, htf_pl, htf_po, htf_pc, htf_p2h, htf_p2l, htf_t]
+
+bool serve_chart = syminfo.session == session.regular
+f_served(string tf, bool allowed) => allowed and timeframe.in_seconds(tf) >= 86400
+
+f_rung(string tf) =>
+    bool is_new = f_is_new(tf)
+    bool served = f_served(tf, serve_chart)
+    [lo, lh, ll, lc, lph, lpl, lpo, lpc, lp2h, lp2l, lt] = f_htf_bar(is_new, open, high, low, close)
+    float so = na
+    float sph = na
+    float spl = na
+    float spo = na
+    float spc = na
+    float sp2h = na
+    float sp2l = na
+    if served
+        [r_o, r_ph, r_pl, r_po, r_pc, r_p2h, r_p2l] = request.security(syminfo.tickerid, tf,
+             [open, high[1], low[1], open[1], close[1], high[2], low[2]],
+             barmerge.gaps_off, barmerge.lookahead_on)
+        so := r_o
+        sph := r_ph
+        spl := r_pl
+        spo := r_po
+        spc := r_pc
+        sp2h := r_p2h
+        sp2l := r_p2l
+    [served ? so : lo, lh, ll, lc,
+         served ? sph : lph, served ? spl : lpl, served ? spo : lpo, served ? spc : lpc,
+         served ? sp2h : lp2h, served ? sp2l : lp2l, lt, is_new]
+
+[s1_o, s1_h, s1_l, s1_c, s1_ph, s1_pl, s1_po, s1_pc, _, _, _, s1_new] = f_rung(tf_s1_e)
+[s1_type, _, s1_if_b, s1_if_s, s1_fb, s1_fs] = f_classify_full(s1_ph, s1_pl, s1_po, s1_pc, s1_h, s1_l, s1_o, s1_c)
+
+[s2_o, s2_h, s2_l, s2_c, s2_ph, s2_pl, s2_po, s2_pc, _, _, _, s2_new] = f_rung(tf_s2_e)
+[s2_type, _, s2_if_b, s2_if_s, s2_fb, s2_fs] = f_classify_full(s2_ph, s2_pl, s2_po, s2_pc, s2_h, s2_l, s2_o, s2_c)
+
+[d1_o, d1_h, d1_l, d1_c, d1_ph, d1_pl, d1_po, d1_pc, _, _, _, d1_new] = f_rung(tf_d1_e)
+[d1_type, d1_inside, d1_if_b, d1_if_s, d1_fb, d1_fs] = f_classify_full(d1_ph, d1_pl, d1_po, d1_pc, d1_h, d1_l, d1_o, d1_c)
+
+[d2_o, d2_h, d2_l, d2_c, d2_ph, d2_pl, d2_po, d2_pc, _, _, _, _] = f_rung(tf_d2_e)
+[d2_type, d2_inside, d2_if_b, d2_if_s, d2_fb, d2_fs] = f_classify_full(d2_ph, d2_pl, d2_po, d2_pc, d2_h, d2_l, d2_o, d2_c)
+
+bool d1_up = close > d1_o
+bool d1_dn = close < d1_o
+bool d2_up = close > d2_o
+bool d2_dn = close < d2_o
+bool dir_agree_bull = d1_up and d2_up
+bool dir_agree_bear = d1_dn and d2_dn
+bool dir_agree = dir_agree_bull or dir_agree_bear
+bool dir_conflict = (d1_up and d2_dn) or (d1_dn and d2_up)
+
+bool s2_struct_long  = s2_type == "2u" or s2_type == "3u"
+bool s2_struct_short = s2_type == "2d" or s2_type == "3d"
+
+int trend_dir = 0
+bool is_ct = false
+if ladder_ok
+    if dir_agree
+        trend_dir := dir_agree_bull ? 1 : -1
+    else if s2_struct_long or s2_struct_short
+        trend_dir := s2_struct_long ? 1 : -1
+        is_ct := true
+
+bool s1_live_bull = not na(s1_ph) and high >= s1_ph
+bool s1_live_bear = not na(s1_pl) and low  <= s1_pl
+bool s2_live_bull = not na(s2_ph) and high >= s2_ph
+bool s2_live_bear = not na(s2_pl) and low  <= s2_pl
+bool d1_live_bull = not na(d1_ph) and high >= d1_ph
+bool d1_live_bear = not na(d1_pl) and low  <= d1_pl
+
+// ACT's stance, reduced to what the color needs: stand aside (grey) or not.
+// Watch and active both paint, so the Trigger timeframe is not read here.
+bool act_aside = false
+if not ladder_ok
+    act_aside := true
+else if dir_conflict
+    bool s2_ct_bull = s2_live_bull and not s2_live_bear and close >= s2_ph
+    bool s2_ct_bear = s2_live_bear and not s2_live_bull and close <= s2_pl
+    act_aside := not (s2_ct_bull or s2_ct_bear)
+else if d1_inside and not d1_live_bull and not d1_live_bear
+    act_aside := d2_inside or not (dir_agree_bull or dir_agree_bear)
+else if (dir_agree_bull and ((d1_fb and d2_if_b) or (d1_if_b and d2_fb))) or (dir_agree_bear and ((d1_fs and d2_if_s) or (d1_if_s and d2_fs)))
+    act_aside := true
+else
+    act_aside := not (dir_agree_bull or dir_agree_bear)
+
+int actCode = act_aside or trend_dir == 0 ? 0 : trend_dir * (is_ct ? 2 : 1)
+
+// No lookahead. Unit tests that run AT this chart bar's close (the chart's
+// bars are the units, a slot equal to the unit) read this bar's color.
+// Everything else reads the last completed chart bar: a bucketed slot bar
+// completes one chart bar after its own close, and units inside a coarser
+// chart bar happen before that bar's color exists.
+int actNow  = actCode
+int actPrev = nz(actCode[1])
+
+bool actActive = actFilterInput != "Off" and ladder_ok
+
+actPass(bool isBull, int code) =>
+    bool ok = true
+    if actActive
+        if actFilterInput == "Main trend only"
+            ok := isBull ? code == 1 : code == -1
+        else
+            ok := isBull ? code > 0 : code < 0
+    ok
+
+// ============================================================================
+// Types
+// ============================================================================
+
+// One direction's TTO state. extreme is the swept-through side (bull: the
+// running sweep low), trigger the opposite side (bull: the sweep bar's high).
+type Side
+    bool  armed       = false
+    bool  armedShown  = false
+    // The entry fired on a unit inside the current slot bar. Consumed at
+    // that bar's close so the bar does not also open a flush - exactly what
+    // the slot-bar-close entry never did.
+    bool  entered     = false
+    // Chart bar the entry printed on, and the trigger and stop it printed
+    // with - the fallback alert speaks from the snapshot, never the live
+    // fields, which on a coarse chart can belong to a later re-arm in the
+    // same chart bar.
+    int   entryBar    = na
+    float entryTrig   = na
+    float entryExt    = na
+    float sweptLevel  = na
+    float extreme     = na
+    float trigger     = na
+    // v1.1.0 notation: the live trigger line of a shown setup, and whether
+    // the armed level was a sweep of a sweep (the entry label says x2).
+    line  trigLine    = na
+    bool  sweep2      = false
+    bool  flushOn     = false
+    float flushExt    = na
+    int   flushExtT   = na
+    int   flushBars   = 0
+
+// One remembered structure level. sweepBorn levels are prior TTO flush
+// extremes - arming on one is a sweep of a sweep.
+type Level
+    float price
+    int   born
+    int   bornIdx   = 0
+    bool  sweepBorn = false
+
+// Per-chart-bar event flags for the alert conditions, shared by all slots.
+type Events
+    bool bullSweep  = false
+    bool bullEntry  = false
+    bool bearSweep  = false
+    bool bearEntry  = false
+    bool bullSweep2 = false
+    bool bearSweep2 = false
+    // v1.3.0: one entry marker per side per chart bar. A second slot
+    // entering on the same bar adds its name to the first marker's text
+    // ("5m x2 · 30m") instead of stacking a second triangle on it.
+    label bullLbl     = na
+    label bearLbl     = na
+    int   bullLblRank = 0
+    int   bearLblRank = 0
+
+// One live fair value gap. bx is created by the first qualifying sweep and
+// extended by later ones.
+type Gap
+    float top
+    float bottom
+    int   startTime
+    box   bx = na
+
+// One watched timeframe: aggregation bucket, rolling completed-bar window
+// (serves both the fractal machine and the three-bar gap pattern), TTO
+// state both directions, and the live gap registries.
+type Slot
+    float bH = na
+    float bL = na
+    float bC = na
+    int   bT = na
+    // Time of the bucket's last unit: where the bar's close happened.
+    int   bLast = na
+    int   bId = na
+    int   barsSeen = 0
+    float h1 = na
+    float l1 = na
+    float c1 = na
+    int   t1 = na
+    float h2 = na
+    float l2 = na
+    int   t2 = na
+    Side  bull
+    Side  bear
+    array<Gap> bullGaps
+    array<Gap> bearGaps
+    array<Level> lows
+    array<Level> highs
+
+newSlot() =>
+    Slot s = Slot.new()
+    s.bull := Side.new()
+    s.bear := Side.new()
+    s.bullGaps := array.new<Gap>()
+    s.bearGaps := array.new<Gap>()
+    s.lows := array.new<Level>()
+    s.highs := array.new<Level>()
+    s
+
+// ============================================================================
+// Gap engine
+// ============================================================================
+
+// Most recent live gap containing price, or na.
+findGap(array<Gap> gaps, float price) =>
+    Gap found = na
+    int n = array.size(gaps)
+    if n > 0
+        for i = n - 1 to 0
+            Gap g = array.get(gaps, i)
+            if price >= g.bottom and price <= g.top
+                found := g
+                break
+    found
+
+// Full trade-through mitigation at unit granularity: a wick beyond the far
+// side kills a gap the moment it happens, on every unit, before any
+// membership test that unit. Partial fills leave a gap alive.
+mitigateGaps(Slot s, float h, float l, int t) =>
+    int nb = array.size(s.bullGaps)
+    if nb > 0
+        for i = nb - 1 to 0
+            Gap g = array.get(s.bullGaps, i)
+            if l < g.bottom
+                if showAllGapsInput and not na(g.bx)
+                    box.set_extend(g.bx, extend.none)
+                    box.set_right(g.bx, t)
+                array.remove(s.bullGaps, i)
+    int ns = array.size(s.bearGaps)
+    if ns > 0
+        for i = ns - 1 to 0
+            Gap g = array.get(s.bearGaps, i)
+            if h > g.top
+                if showAllGapsInput and not na(g.bx)
+                    box.set_extend(g.bx, extend.none)
+                    box.set_right(g.bx, t)
+                array.remove(s.bearGaps, i)
+
+// Draw or extend a qualifying gap's box, labeled with its slot timeframe.
+drawGapBox(Gap g, bool isBull, int t, string tfName) =>
+    if fvgBoxInput
+        if na(g.bx)
+            color base = isBull ? bullEntryColorInput : bearEntryColorInput
+            g.bx := box.new(g.startTime, g.top, t, g.bottom, xloc = xloc.bar_time, border_color = na, bgcolor = color.new(base, 92), text = tfName, text_size = size.tiny, text_color = color.new(base, 40), text_halign = text.align_left, text_valign = text.align_top)
+        if not na(g.bx)
+            box.set_right(g.bx, t)
+
+// The qualification rule: the sweep extreme must lie inside a live
+// same-direction gap of any usable slot at or ABOVE the TTO's timeframe.
+// Every qualifying slot draws its gap - stacked boxes are the grade.
+gapQualify(bool isBull, float price, int streamSec, int t, Slot o1, Slot o2, Slot o3, Slot o4) =>
+    bool hit = false
+    if s1Usable and s1Sec >= streamSec
+        Gap g = findGap(isBull ? o1.bullGaps : o1.bearGaps, price)
+        if not na(g)
+            hit := true
+            drawGapBox(g, isBull, t, s1Name)
+    if s2Usable and s2Sec >= streamSec
+        Gap g = findGap(isBull ? o2.bullGaps : o2.bearGaps, price)
+        if not na(g)
+            hit := true
+            drawGapBox(g, isBull, t, s2Name)
+    if s3Usable and s3Sec >= streamSec
+        Gap g = findGap(isBull ? o3.bullGaps : o3.bearGaps, price)
+        if not na(g)
+            hit := true
+            drawGapBox(g, isBull, t, s3Name)
+    if s4Usable and s4Sec >= streamSec
+        Gap g = findGap(isBull ? o4.bullGaps : o4.bearGaps, price)
+        if not na(g)
+            hit := true
+            drawGapBox(g, isBull, t, s4Name)
+    hit
+
+// ============================================================================
+// Level registry
+// ============================================================================
+
+addLevel(array<Level> arr, float price, int born, int bornIdx, bool sweepBorn) =>
+    Level dup = na
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(arr, i).price == price
+                dup := array.get(arr, i)
+                break
+    // Exact-price collisions upgrade lineage instead of dropping it - a
+    // flush extreme landing on an existing fractal to the tick still marks
+    // that level sweep-born (the older born time stays, which only helps
+    // the age gate).
+    if not na(dup) and sweepBorn
+        dup.sweepBorn := true
+    if na(dup)
+        if n >= 50
+            array.remove(arr, 0)
+        array.push(arr, Level.new(price, born, bornIdx, sweepBorn))
+
+// Move our own armed setup's sweep-born stop level to an extension low -
+// the registry must follow the true flush extreme, not the arm-time one.
+relocateLevel(array<Level> arr, float oldPrice, float newPrice, int newBorn, int newIdx) =>
+    bool moved = false
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = array.get(arr, i)
+            if lv.price == oldPrice
+                lv.price := newPrice
+                lv.born := newBorn
+                lv.bornIdx := newIdx
+                lv.sweepBorn := true
+                moved := true
+                break
+    if not moved
+        addLevel(arr, newPrice, newBorn, newIdx, true)
+
+anyLevelAbove(array<Level> arr, float p) =>
+    bool found = false
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(arr, i).price > p
+                found := true
+                break
+    found
+
+anyLevelBelow(array<Level> arr, float p) =>
+    bool found = false
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(arr, i).price < p
+                found := true
+                break
+    found
+
+// Deepest level reclaimed by this close: swept (price above the flush
+// extreme), reclaimed (price at or below the close), and older than the
+// flush extreme - structure formed during the flush recovery leg was never
+// swept after it existed. Lowest wins.
+deepestReclaimed(array<Level> arr, float ext, float c, int extT) =>
+    Level best = na
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = array.get(arr, i)
+            if lv.price > ext and lv.price <= c and lv.born <= extT and (na(best) or lv.price < best.price)
+                best := lv
+    best
+
+highestReclaimed(array<Level> arr, float ext, float c, int extT) =>
+    Level best = na
+    int n = array.size(arr)
+    if n > 0
+        for i = 0 to n - 1
+            Level lv = array.get(arr, i)
+            if lv.price < ext and lv.price >= c and lv.born <= extT and (na(best) or lv.price > best.price)
+                best := lv
+    best
+
+// Broken structure dies unbounded: every low-level above the flush extreme
+// (or high-level below it) that was not reclaimed is gone - gapped-over
+// levels included, so nothing broken survives to reopen phantom flushes.
+removeLowsAbove(array<Level> arr, float lo) =>
+    int n = array.size(arr)
+    if n > 0
+        for i = n - 1 to 0
+            if array.get(arr, i).price > lo
+                array.remove(arr, i)
+
+removeHighsBelow(array<Level> arr, float hi) =>
+    int n = array.size(arr)
+    if n > 0
+        for i = n - 1 to 0
+            if array.get(arr, i).price < hi
+                array.remove(arr, i)
+
+// ============================================================================
+// Trigger lines (v1.1.0)
+// ============================================================================
+
+// v1.3.0: line ends land on the CHART bar where the event happened. A
+// slot bar arms, extends or dies at its close - its last unit - so lines
+// start there, not at the slot bar's open (a 1H trigger drawn from 06:00 on
+// a 5m chart sat above candles that had not printed that high yet). An
+// entry lands on the chart bar that crossed. On a coarse chart a unit time
+// inside a bar would snap to the bar's edge, so it is mapped to the bar's
+// own time: the last unit of a just-completed slot bar is in this chart bar
+// or the one before it.
+int prevBarTime = nz(time[1], time)
+chartT(int x) => x >= time ? time : prevBarTime
+
+// Start a dotted trigger line at the arm or extension bar. Width follows
+// the slot rank, like the level line.
+startTrig(bool isBull, float price, int t, int width) =>
+    line.new(t, price, t, price, xloc = xloc.bar_time, color = color.new(isBull ? bullEntryColorInput : bearEntryColorInput, 25), width = width, style = line.style_dotted)
+
+// End a trigger line where its setup resolved. faint = it died untraded.
+endTrig(line ln, bool isBull, int t, bool faint) =>
+    if not na(ln)
+        line.set_x2(ln, t)
+        if faint
+            line.set_color(ln, color.new(isBull ? bullEntryColorInput : bearEntryColorInput, 75))
+
+// Carry a live trigger line to the current bar.
+stretchTrig(Side sd, int t) =>
+    if sd.armed and not na(sd.trigLine)
+        line.set_x2(sd.trigLine, t)
+
+// ============================================================================
+// Slot bar processing - gap pattern, then the TTO machine, then the window
+// ============================================================================
+
+processSlotBar(Slot s, Events ev, int slotSec, int rank, string slotTf, Slot o1, Slot o2, Slot o3, Slot o4, float h, float l, float c, int t, int tEnd) =>
+    int lineWidth = rank
+    int tx = chartT(tEnd)
+    string labelSize = rankSize(rank)
+
+    // Three-bar gap pattern on this slot's completed bars, anchored at the
+    // far-edge bar.
+    bool sameSession = not fvgSessionInput or na(s.t2) or (dayofmonth(t, syminfo.timezone) == dayofmonth(s.t2, syminfo.timezone) and month(t, syminfo.timezone) == month(s.t2, syminfo.timezone) and year(t, syminfo.timezone) == year(s.t2, syminfo.timezone))
+    if sameSession and not na(s.h2) and not na(s.c1)
+        if l > s.h2 and s.c1 > s.h2 and (l - s.h2) / s.h2 * 100 >= fvgThresholdInput
+            if array.size(s.bullGaps) >= 100
+                array.remove(s.bullGaps, 0)
+            Gap nbg = Gap.new(l, s.h2, s.t2)
+            if showAllGapsInput
+                nbg.bx := box.new(nbg.startTime, nbg.top, t, nbg.bottom, xloc = xloc.bar_time, extend = extend.right, border_color = na, bgcolor = color.new(bullEntryColorInput, 95), text = slotTf, text_size = size.tiny, text_color = color.new(bullEntryColorInput, 60), text_halign = text.align_left, text_valign = text.align_top)
+            array.push(s.bullGaps, nbg)
+        if h < s.l2 and s.c1 < s.l2 and (s.l2 - h) / h * 100 >= fvgThresholdInput
+            if array.size(s.bearGaps) >= 100
+                array.remove(s.bearGaps, 0)
+            Gap nsg = Gap.new(s.l2, h, s.t2)
+            if showAllGapsInput
+                nsg.bx := box.new(nsg.startTime, nsg.top, t, nsg.bottom, xloc = xloc.bar_time, extend = extend.right, border_color = na, bgcolor = color.new(bearEntryColorInput, 95), text = slotTf, text_size = size.tiny, text_color = color.new(bearEntryColorInput, 60), text_halign = text.align_left, text_valign = text.align_top)
+            array.push(s.bearGaps, nsg)
+
+    s.barsSeen += 1
+
+    // Fractal structure joins the registry.
+    if not na(s.l2) and s.l1 < s.l2 and s.l1 < l
+        addLevel(s.lows, s.l1, s.t1, s.barsSeen, false)
+    if not na(s.h2) and s.h1 > s.h2 and s.h1 > h
+        addLevel(s.highs, s.h1, s.t1, s.barsSeen, false)
+
+    [bullTfcOk, bearTfcOk] = tfcState(c)
+    int actD = unitsNative and slotSec == unitSec ? actNow : actPrev
+
+    if showBullInput
+        if s.bull.armed
+            // The crossing itself is tested per unit in unitEntry. What is
+            // left here is what a CLOSE defines: invalidation and extension.
+            if c < s.bull.sweptLevel
+                s.bull.armed := false
+                endTrig(s.bull.trigLine, true, tx, true)
+                s.bull.trigLine := na
+            else if l < s.bull.extreme
+                relocateLevel(s.lows, s.bull.extreme, l, t, s.barsSeen)
+                s.bull.extreme := l
+                s.bull.trigger := h
+                if not na(s.bull.trigLine)
+                    endTrig(s.bull.trigLine, true, tx, false)
+                    s.bull.trigLine := startTrig(true, h, tx, lineWidth)
+        else if s.bull.entered
+            s.bull.entered := false
+        else
+            if not s.bull.flushOn and anyLevelAbove(s.lows, l)
+                s.bull.flushOn   := true
+                s.bull.flushExt  := l
+                s.bull.flushExtT := t
+                s.bull.flushBars := 0
+            else if s.bull.flushOn
+                if l < s.bull.flushExt
+                    s.bull.flushExt  := l
+                    s.bull.flushExtT := t
+                    s.bull.flushBars := 0
+                else
+                    s.bull.flushBars += 1
+            if s.bull.flushOn
+                Level armL = na
+                if s.bull.flushBars <= reclaimWindowInput
+                    armL := deepestReclaimed(s.lows, s.bull.flushExt, c, s.bull.flushExtT)
+                if not na(armL)
+                    bool sweep2 = armL.sweepBorn and s.barsSeen - armL.bornIdx >= sweep2AgeInput
+                    bool bullYoung = armL.sweepBorn and not sweep2
+                    bool bullShow = false
+                    string bullReject = na
+                    if not slotVisible(slotSec)
+                        bullReject := na
+                    else if not bullTfcOk
+                        bullReject := "tfc"
+                    else if not actPass(true, actD)
+                        bullReject := "act"
+                    else if bullYoung and not showYoungResweepsInput
+                        bullReject := "young"
+                    else if not fvgOnInput
+                        bullShow := true
+                    else
+                        bullShow := gapQualify(true, s.bull.flushExt, slotSec, tx, o1, o2, o3, o4)
+                        if not bullShow
+                            bullReject := "gap"
+                    s.bull.armed      := true
+                    s.bull.armedShown := bullShow
+                    s.bull.sweptLevel := armL.price
+                    s.bull.extreme    := s.bull.flushExt
+                    s.bull.trigger    := h
+                    s.bull.sweep2     := sweep2
+                    s.bull.trigLine   := na
+                    if bullShow
+                        ev.bullSweep := true
+                        if sweep2
+                            ev.bullSweep2 := true
+                        line.new(armL.born, armL.price, tx, armL.price, xloc = xloc.bar_time, color = levelColorInput, width = lineWidth)
+                        s.bull.trigLine := startTrig(true, h, tx, lineWidth)
+                        if showArmArrowsInput
+                            label.new(tx, na, xloc = xloc.bar_time, yloc = yloc.belowbar, style = label.style_arrowup, color = sweep2 ? sweep2ColorInput : structColorInput, size = labelSize)
+                        if alertSweepInput
+                            alert("TTO " + slotTf + (sweep2 ? " bullish SWEEP-OF-SWEEP" : " bullish sweep") + " on " + syminfo.ticker + " - level " + str.tostring(armL.price, format.mintick) + ", entry over " + str.tostring(h, format.mintick), alert.freq_all)
+                    else if showRejectedInput and not na(bullReject)
+                        label.new(tx, na, "x " + bullReject, xloc = xloc.bar_time, yloc = yloc.belowbar, style = label.style_none, textcolor = color.new(color.gray, 25), size = size.tiny)
+                    removeLowsAbove(s.lows, s.bull.flushExt)
+                    addLevel(s.lows, s.bull.flushExt, s.bull.flushExtT, s.barsSeen, true)
+                    s.bull.flushOn := false
+                else if s.bull.flushBars > reclaimWindowInput
+                    // Broken structure, closed case - gapped-over levels included.
+                    removeLowsAbove(s.lows, s.bull.flushExt)
+                    s.bull.flushOn := false
+
+    if showBearInput
+        if s.bear.armed
+            if c > s.bear.sweptLevel
+                s.bear.armed := false
+                endTrig(s.bear.trigLine, false, tx, true)
+                s.bear.trigLine := na
+            else if h > s.bear.extreme
+                relocateLevel(s.highs, s.bear.extreme, h, t, s.barsSeen)
+                s.bear.extreme := h
+                s.bear.trigger := l
+                if not na(s.bear.trigLine)
+                    endTrig(s.bear.trigLine, false, tx, false)
+                    s.bear.trigLine := startTrig(false, l, tx, lineWidth)
+        else if s.bear.entered
+            s.bear.entered := false
+        else
+            if not s.bear.flushOn and anyLevelBelow(s.highs, h)
+                s.bear.flushOn   := true
+                s.bear.flushExt  := h
+                s.bear.flushExtT := t
+                s.bear.flushBars := 0
+            else if s.bear.flushOn
+                if h > s.bear.flushExt
+                    s.bear.flushExt  := h
+                    s.bear.flushExtT := t
+                    s.bear.flushBars := 0
+                else
+                    s.bear.flushBars += 1
+            if s.bear.flushOn
+                Level armS = na
+                if s.bear.flushBars <= reclaimWindowInput
+                    armS := highestReclaimed(s.highs, s.bear.flushExt, c, s.bear.flushExtT)
+                if not na(armS)
+                    bool sweep2s = armS.sweepBorn and s.barsSeen - armS.bornIdx >= sweep2AgeInput
+                    bool bearYoung = armS.sweepBorn and not sweep2s
+                    bool bearShow = false
+                    string bearReject = na
+                    if not slotVisible(slotSec)
+                        bearReject := na
+                    else if not bearTfcOk
+                        bearReject := "tfc"
+                    else if not actPass(false, actD)
+                        bearReject := "act"
+                    else if bearYoung and not showYoungResweepsInput
+                        bearReject := "young"
+                    else if not fvgOnInput
+                        bearShow := true
+                    else
+                        bearShow := gapQualify(false, s.bear.flushExt, slotSec, tx, o1, o2, o3, o4)
+                        if not bearShow
+                            bearReject := "gap"
+                    s.bear.armed      := true
+                    s.bear.armedShown := bearShow
+                    s.bear.sweptLevel := armS.price
+                    s.bear.extreme    := s.bear.flushExt
+                    s.bear.trigger    := l
+                    s.bear.sweep2     := sweep2s
+                    s.bear.trigLine   := na
+                    if bearShow
+                        ev.bearSweep := true
+                        if sweep2s
+                            ev.bearSweep2 := true
+                        line.new(armS.born, armS.price, tx, armS.price, xloc = xloc.bar_time, color = levelColorInput, width = lineWidth)
+                        s.bear.trigLine := startTrig(false, l, tx, lineWidth)
+                        if showArmArrowsInput
+                            label.new(tx, na, xloc = xloc.bar_time, yloc = yloc.abovebar, style = label.style_arrowdown, color = sweep2s ? sweep2ColorInput : structColorInput, size = labelSize)
+                        if alertSweepInput
+                            alert("TTO " + slotTf + (sweep2s ? " bearish SWEEP-OF-SWEEP" : " bearish sweep") + " on " + syminfo.ticker + " - level " + str.tostring(armS.price, format.mintick) + ", entry under " + str.tostring(l, format.mintick), alert.freq_all)
+                    else if showRejectedInput and not na(bearReject)
+                        label.new(tx, na, "x " + bearReject, xloc = xloc.bar_time, yloc = yloc.abovebar, style = label.style_none, textcolor = color.new(color.gray, 25), size = size.tiny)
+                    removeHighsBelow(s.highs, s.bear.flushExt)
+                    addLevel(s.highs, s.bear.flushExt, s.bear.flushExtT, s.barsSeen, true)
+                    s.bear.flushOn := false
+                else if s.bear.flushBars > reclaimWindowInput
+                    removeHighsBelow(s.highs, s.bear.flushExt)
+                    s.bear.flushOn := false
+
+    s.h2 := s.h1
+    s.l2 := s.l1
+    s.t2 := s.t1
+    s.h1 := h
+    s.l1 := l
+    s.c1 := c
+    s.t1 := t
+
+// THE ENTRY, AT UNIT GRANULARITY. "The moment price trades through the
+// trigger." A crossing is a price event, and the slot bar was making it
+// wait for a close it had nothing to do with. Priority: the crossing is
+// tested before the slot bar gets to invalidate or extend, so the set of
+// entries is the slot-bar-close set - only the time on the marker moves,
+// to the unit that actually crossed. The alert is not here; it fires from
+// the live bar (liveEntry) so it does not wait for the chart bar either.
+unitEntry(Slot s, Events ev, int rank, string slotTf, float uh, float ul, float uc, int ut) =>
+    string labelSize = entrySize(rank)
+    [bullTfcOk, bearTfcOk] = tfcState(uc)
+    int actU = unitsNative ? actNow : actPrev
+    if showBullInput and s.bull.armed and uh > s.bull.trigger
+        bool bullTaken = s.bull.armedShown and bullTfcOk and actPass(true, actU)
+        endTrig(s.bull.trigLine, true, chartT(ut), not bullTaken)
+        s.bull.trigLine := na
+        if bullTaken
+            ev.bullEntry := true
+            string bullTxt = slotTf + (s.bull.sweep2 ? " ×2" : "")
+            if na(ev.bullLbl)
+                ev.bullLbl := label.new(chartT(ut), na, bullTxt, xloc = xloc.bar_time, yloc = yloc.belowbar, style = entryStyle(true), color = bullEntryColorInput, textcolor = entryTextColor(true), size = labelSize)
+                ev.bullLblRank := rank
+            else
+                label.set_text(ev.bullLbl, label.get_text(ev.bullLbl) + " · " + bullTxt)
+                if rank > ev.bullLblRank
+                    label.set_size(ev.bullLbl, labelSize)
+                    ev.bullLblRank := rank
+            if s.bull.entryBar != bar_index
+                s.bull.entryTrig := s.bull.trigger
+                s.bull.entryExt  := s.bull.extreme
+            s.bull.entryBar := bar_index
+        s.bull.armed   := false
+        s.bull.entered := true
+    if showBearInput and s.bear.armed and ul < s.bear.trigger
+        bool bearTaken = s.bear.armedShown and bearTfcOk and actPass(false, actU)
+        endTrig(s.bear.trigLine, false, chartT(ut), not bearTaken)
+        s.bear.trigLine := na
+        if bearTaken
+            ev.bearEntry := true
+            string bearTxt = slotTf + (s.bear.sweep2 ? " ×2" : "")
+            if na(ev.bearLbl)
+                ev.bearLbl := label.new(chartT(ut), na, bearTxt, xloc = xloc.bar_time, yloc = yloc.abovebar, style = entryStyle(false), color = bearEntryColorInput, textcolor = entryTextColor(false), size = labelSize)
+                ev.bearLblRank := rank
+            else
+                label.set_text(ev.bearLbl, label.get_text(ev.bearLbl) + " · " + bearTxt)
+                if rank > ev.bearLblRank
+                    label.set_size(ev.bearLbl, labelSize)
+                    ev.bearLblRank := rank
+            if s.bear.entryBar != bar_index
+                s.bear.entryTrig := s.bear.trigger
+                s.bear.entryExt  := s.bear.extreme
+            s.bear.entryBar := bar_index
+        s.bear.armed   := false
+        s.bear.entered := true
+
+// Feed one unit into a slot: mitigate first, test the trigger, then build
+// slot bars - direct when the slot IS the unit timeframe, otherwise into
+// the aggregation bucket, emitting the completed bucket on boundary change.
+// Bucket id: served period time at or above the chart (session-anchored),
+// clock floor below it.
+unitTick(Slot s, Events ev, bool usable, int slotSec, int served, int rank, string slotTf, Slot o1, Slot o2, Slot o3, Slot o4, float h, float l, float c, int t) =>
+    if usable
+        mitigateGaps(s, h, l, t)
+        if slotSec == unitSec
+            unitEntry(s, ev, rank, slotTf, h, l, c, t)
+            processSlotBar(s, ev, slotSec, rank, slotTf, o1, o2, o3, o4, h, l, c, t, t)
+        else
+            int id = slotSec >= chartTfSeconds ? served : int(math.floor(t / (slotSec * 1000)))
+            if na(s.bId)
+                unitEntry(s, ev, rank, slotTf, h, l, c, t)
+                s.bId := id
+                s.bH := h
+                s.bL := l
+                s.bC := c
+                s.bT := t
+                s.bLast := t
+            else if id != s.bId
+                // ORDER MATTERS ON THE BOUNDARY. The unit that
+                // opens bucket Q must be tested against the state bucket P
+                // leaves behind - the arm, invalidation or extension P
+                // decides at its close - not the state from before P. Tested
+                // first, it missed a fresh arm's crossing, entered on a
+                // setup P had just invalidated, and judged against a trigger
+                // P had just moved.
+                processSlotBar(s, ev, slotSec, rank, slotTf, o1, o2, o3, o4, s.bH, s.bL, s.bC, s.bT, s.bLast)
+                unitEntry(s, ev, rank, slotTf, h, l, c, t)
+                s.bId := id
+                s.bH := h
+                s.bL := l
+                s.bC := c
+                s.bT := t
+                s.bLast := t
+            else
+                unitEntry(s, ev, rank, slotTf, h, l, c, t)
+                s.bH := math.max(s.bH, h)
+                s.bL := math.min(s.bL, l)
+                s.bC := c
+                s.bLast := t
+
+// ============================================================================
+// Drive - confirmed chart bars only
+// ============================================================================
+
+var Slot slot1 = newSlot()
+var Slot slot2 = newSlot()
+var Slot slot3 = newSlot()
+var Slot slot4 = newSlot()
+
+// THE ALERT, AT THE CROSSING. Reads only - var state rolls back every tick
+// on the forming bar, so this mutates nothing. It asks: is this slot armed
+// and shown, does continuity hold on the live close, and has the live bar
+// traded through the trigger? Once per slot per side per bar, tracked in
+// varip flags that survive the rollback, so two slots crossing in the same
+// bar each get their alert and no slot gets two. Runs BEFORE the confirmed
+// drive, because on a bar's last tick both are true and the drive would
+// consume the arm before this could see it.
+msgAt(bool isBull, string slotTf, float trig, float ext) =>
+    isBull ? "TTO " + slotTf + " bullish entry on " + syminfo.ticker + " over " + str.tostring(trig, format.mintick) + " - stop ref " + str.tostring(ext, format.mintick) : "TTO " + slotTf + " bearish entry on " + syminfo.ticker + " under " + str.tostring(trig, format.mintick) + " - stop ref " + str.tostring(ext, format.mintick)
+entryMsg(Slot s, bool isBull, string slotTf) =>
+    isBull ? msgAt(true, slotTf, s.bull.trigger, s.bull.extreme) : msgAt(false, slotTf, s.bear.trigger, s.bear.extreme)
+
+liveEntry(Slot s, bool usable, bool isBull, string slotTf) =>
+    bool fire = false
+    string msg = ""
+    if usable and alertEntryInput
+        [bullOk, bearOk] = tfcState(close)
+        if isBull and showBullInput and s.bull.armed and s.bull.armedShown and bullOk and actPass(true, actNow) and high > s.bull.trigger
+            fire := true
+            msg := entryMsg(s, true, slotTf)
+        if not isBull and showBearInput and s.bear.armed and s.bear.armedShown and bearOk and actPass(false, actNow) and low < s.bear.trigger
+            fire := true
+            msg := entryMsg(s, false, slotTf)
+    [fire, msg]
+
+// The fast path is only honest when the state it reads is CURRENT. On a
+// chart whose bars ARE the units, every arm, invalidation and extension
+// lands at a chart bar close, so the forming bar's state is exact. On a
+// chart coarser than its units (15m or 1h with 5m units) the drive can arm,
+// kill or move a trigger several times inside one chart bar, and the live
+// block, reading rolled-back state, would alert on setups already dead and
+// stay silent on ones born mid-bar. There the alert waits for
+// the bar and comes from the fallback below. The corner tag says which.
+bool alertsLive = unitsNative
+
+// -1, not na: a comparison against na is false in Pine, and a bar id that
+// never compares unequal would never reset the flags after the first alert.
+varip int  liveBar = -1
+varip bool live1B = false
+varip bool live1S = false
+varip bool live2B = false
+varip bool live2S = false
+varip bool live3B = false
+varip bool live3S = false
+varip bool live4B = false
+varip bool live4S = false
+if barstate.isrealtime and alertsLive
+    if liveBar != bar_index
+        liveBar := bar_index
+        live1B := false
+        live1S := false
+        live2B := false
+        live2S := false
+        live3B := false
+        live3S := false
+        live4B := false
+        live4S := false
+    [f1b, m1b] = liveEntry(slot1, s1Usable, true, s1Name)
+    if f1b and not live1B
+        alert(m1b, alert.freq_all)
+        live1B := true
+    [f1s, m1s] = liveEntry(slot1, s1Usable, false, s1Name)
+    if f1s and not live1S
+        alert(m1s, alert.freq_all)
+        live1S := true
+    [f2b, m2b] = liveEntry(slot2, s2Usable, true, s2Name)
+    if f2b and not live2B
+        alert(m2b, alert.freq_all)
+        live2B := true
+    [f2s, m2s] = liveEntry(slot2, s2Usable, false, s2Name)
+    if f2s and not live2S
+        alert(m2s, alert.freq_all)
+        live2S := true
+    [f3b, m3b] = liveEntry(slot3, s3Usable, true, s3Name)
+    if f3b and not live3B
+        alert(m3b, alert.freq_all)
+        live3B := true
+    [f3s, m3s] = liveEntry(slot3, s3Usable, false, s3Name)
+    if f3s and not live3S
+        alert(m3s, alert.freq_all)
+        live3S := true
+    [f4b, m4b] = liveEntry(slot4, s4Usable, true, s4Name)
+    if f4b and not live4B
+        alert(m4b, alert.freq_all)
+        live4B := true
+    [f4s, m4s] = liveEntry(slot4, s4Usable, false, s4Name)
+    if f4s and not live4S
+        alert(m4s, alert.freq_all)
+        live4S := true
+
+Events ev = Events.new()
+
+if barstate.isconfirmed
+    if unitsNative
+        unitTick(slot1, ev, s1Usable, s1Sec, s1Served, s1Rank, s1Name, slot1, slot2, slot3, slot4, high, low, close, time)
+        unitTick(slot2, ev, s2Usable, s2Sec, s2Served, s2Rank, s2Name, slot1, slot2, slot3, slot4, high, low, close, time)
+        unitTick(slot3, ev, s3Usable, s3Sec, s3Served, s3Rank, s3Name, slot1, slot2, slot3, slot4, high, low, close, time)
+        unitTick(slot4, ev, s4Usable, s4Sec, s4Served, s4Rank, s4Name, slot1, slot2, slot3, slot4, high, low, close, time)
+    else
+        int n = array.size(ltfTimes)
+        // Pine's for-loop counts DOWN when the end is below the start, so an
+        // empty array must be guarded, not looped.
+        if n > 0
+            for i = 0 to n - 1
+                float uh = array.get(ltfHighs, i)
+                float ul = array.get(ltfLows, i)
+                float uc = array.get(ltfCloses, i)
+                int   ut = array.get(ltfTimes, i)
+                unitTick(slot1, ev, s1Usable, s1Sec, s1Served, s1Rank, s1Name, slot1, slot2, slot3, slot4, uh, ul, uc, ut)
+                unitTick(slot2, ev, s2Usable, s2Sec, s2Served, s2Rank, s2Name, slot1, slot2, slot3, slot4, uh, ul, uc, ut)
+                unitTick(slot3, ev, s3Usable, s3Sec, s3Served, s3Rank, s3Name, slot1, slot2, slot3, slot4, uh, ul, uc, ut)
+                unitTick(slot4, ev, s4Usable, s4Sec, s4Served, s4Rank, s4Name, slot1, slot2, slot3, slot4, uh, ul, uc, ut)
+
+// Live trigger lines follow the chart to the last confirmed bar.
+if barstate.isconfirmed
+    stretchTrig(slot1.bull, time)
+    stretchTrig(slot1.bear, time)
+    stretchTrig(slot2.bull, time)
+    stretchTrig(slot2.bear, time)
+    stretchTrig(slot3.bull, time)
+    stretchTrig(slot3.bear, time)
+    stretchTrig(slot4.bull, time)
+    stretchTrig(slot4.bear, time)
+
+// THE FALLBACK. After the drive, any entry that printed on this chart bar
+// and was not alerted by the fast path gets its alert now, at the bar's
+// close. On a units-native chart this is a no-op - the fast path already
+// fired and the flag is set. On a coarser chart it is the only alert, and
+// it is bar-close timing with the exact marker.
+if barstate.isrealtime and alertEntryInput
+    if liveBar != bar_index
+        liveBar := bar_index
+        live1B := false
+        live1S := false
+        live2B := false
+        live2S := false
+        live3B := false
+        live3S := false
+        live4B := false
+        live4S := false
+    if s1Usable and slot1.bull.entryBar == bar_index and not live1B
+        alert(msgAt(true, s1Name, slot1.bull.entryTrig, slot1.bull.entryExt), alert.freq_all)
+        live1B := true
+    if s1Usable and slot1.bear.entryBar == bar_index and not live1S
+        alert(msgAt(false, s1Name, slot1.bear.entryTrig, slot1.bear.entryExt), alert.freq_all)
+        live1S := true
+    if s2Usable and slot2.bull.entryBar == bar_index and not live2B
+        alert(msgAt(true, s2Name, slot2.bull.entryTrig, slot2.bull.entryExt), alert.freq_all)
+        live2B := true
+    if s2Usable and slot2.bear.entryBar == bar_index and not live2S
+        alert(msgAt(false, s2Name, slot2.bear.entryTrig, slot2.bear.entryExt), alert.freq_all)
+        live2S := true
+    if s3Usable and slot3.bull.entryBar == bar_index and not live3B
+        alert(msgAt(true, s3Name, slot3.bull.entryTrig, slot3.bull.entryExt), alert.freq_all)
+        live3B := true
+    if s3Usable and slot3.bear.entryBar == bar_index and not live3S
+        alert(msgAt(false, s3Name, slot3.bear.entryTrig, slot3.bear.entryExt), alert.freq_all)
+        live3S := true
+    if s4Usable and slot4.bull.entryBar == bar_index and not live4B
+        alert(msgAt(true, s4Name, slot4.bull.entryTrig, slot4.bull.entryExt), alert.freq_all)
+        live4B := true
+    if s4Usable and slot4.bear.entryBar == bar_index and not live4S
+        alert(msgAt(false, s4Name, slot4.bear.entryTrig, slot4.bear.entryExt), alert.freq_all)
+        live4S := true
+
+// ============================================================================
+// Corner tag - the one diagnostic that survives a screenshot
+// ============================================================================
+
+string inactiveSlots = (s1OnInput and not s1Usable ? s1Name + " " : "") + (s2OnInput and not s2Usable ? s2Name + " " : "") + (s3OnInput and not s3Usable ? s3Name + " " : "") + (s4OnInput and not s4Usable ? s4Name + " " : "")
+string hiddenSlots = (s1OnInput and s1Usable and not slotVisible(s1Sec) ? s1Name + " " : "") + (s2OnInput and s2Usable and not slotVisible(s2Sec) ? s2Name + " " : "") + (s3OnInput and s3Usable and not slotVisible(s3Sec) ? s3Name + " " : "") + (s4OnInput and s4Usable and not slotVisible(s4Sec) ? s4Name + " " : "")
+
+string tagPos = switch tagPosInput
+    "Top Center"   => position.top_center
+    "Top Left"     => position.top_left
+    "Bottom Right" => position.bottom_right
+    "Bottom Left"  => position.bottom_left
+    => position.top_right
+
+var table noteTable = na
+if barstate.islast and showTagInput
+    if na(noteTable)
+        noteTable := table.new(tagPos, 1, 1)
+    table.cell(noteTable, 0, 0, "TTO " + VERSION + "  |  units " + tfName(unitTf) + "  |  alerts " + (alertsLive ? "live" : "bar close") + (fvgOnInput ? "  |  gap" : "  |  no gap filter") + (tfcOnInput ? "  |  tfc" : "") + (actActive ? (actFilterInput == "Main trend only" ? "  |  act main" : "  |  act") : actFilterInput != "Off" ? "  |  act n/a" : "") + (inactiveSlots == "" ? "" : "  |  off: " + inactiveSlots) + (hiddenSlots == "" ? "" : "  |  hidden: " + hiddenSlots), text_color = #b2b5be, bgcolor = color.new(#1a1a1a, 15), text_size = size.tiny)
+
+// ============================================================================
+// Alerts - shared across slots
+// ============================================================================
+
+// One alert() setup covers everything above with prices in the message.
+// These fire at the chart bar's close, one per condition per bar.
+alertcondition(ev.bullSweep, "Bullish TTO sweep", "TTO bullish sweep on {{ticker}} ({{interval}}): low swept and reclaimed, entry over the sweep bar high")
+alertcondition(ev.bullEntry, "Bullish TTO entry", "TTO bullish entry on {{ticker}} ({{interval}}): sweep bar high taken out")
+alertcondition(ev.bearSweep, "Bearish TTO sweep", "TTO bearish sweep on {{ticker}} ({{interval}}): high swept and reclaimed, entry under the sweep bar low")
+alertcondition(ev.bearEntry, "Bearish TTO entry", "TTO bearish entry on {{ticker}} ({{interval}}): sweep bar low taken out")
+alertcondition(ev.bullSweep2, "Bullish sweep of a sweep", "TTO bullish x2 sweep on {{ticker}} ({{interval}}): an older sweep low swept and reclaimed")
+alertcondition(ev.bearSweep2, "Bearish sweep of a sweep", "TTO bearish x2 sweep on {{ticker}} ({{interval}}): an older sweep high swept and reclaimed")
