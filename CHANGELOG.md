@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.1 (2026-10-23)
+
+- Hovering an entry marker explains it: timeframe, direction, trigger, stop reference, and what x2 means.
+- Script header credits Rob Smith and TheStrat for the Triangle They Out.
+
+No change to detection, filters or alerts.
+
 ## 1.3.0 (2026-10-23)
 
 First public release.

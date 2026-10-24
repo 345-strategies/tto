@@ -1,11 +1,15 @@
 //@version=6
-// TheStrat TTO: Triangle They Out - v1.3.0
+// TheStrat TTO: Triangle They Out - v1.3.1
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// TTO marks one entry pattern. A pullback leaves a point of structure; a
+// The Triangle They Out, as taught by Rob Smith (TheStrat): price forms a
+// triangle, the break out of it stops some participants out, and the entry
+// comes after they are taken out.
+//
+// TTO marks it this way. A pullback leaves a point of structure; a
 // later bar sweeps it (the stop run that takes "them" out) and closes back
 // inside; the entry is a break of that sweep bar's opposite extreme, and
 // the sweep extreme is the stop reference. Display and alerts only: no
@@ -63,9 +67,9 @@
 //
 // Version history: CHANGELOG.md in the repository.
 
-indicator("TheStrat TTO: Triangle They Out - v1.3.0", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("TheStrat TTO: Triangle They Out - v1.3.1", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
-const string VERSION = "1.3.0"
+const string VERSION = "1.3.1"
 
 // ============================================================================
 // Inputs
@@ -231,6 +235,11 @@ entryStyle(bool isBull) =>
         "Diamond" => label.style_diamond
         "Circle"  => label.style_circle
         => isBull ? label.style_triangleup : label.style_triangledown
+
+// Hover text on an entry marker: what the slot name and x2 mean, and the
+// prices, so a reader never has to look up the notation.
+entryTip(bool isBull, string slotTf, bool sweep2, float trig, float ext) =>
+    slotTf + (isBull ? " bullish" : " bearish") + " TTO entry: " + (isBull ? "over " : "under ") + str.tostring(trig, format.mintick) + ", stop reference " + str.tostring(ext, format.mintick) + "." + (sweep2 ? " x2 = sweep of a sweep: the level swept was itself the stop-run extreme of an earlier TTO, so the same liquidity was taken twice." : "")
 
 // Text inside a filled Label reads in white; beside a glyph, in the side color.
 entryTextColor(bool isBull) =>
@@ -578,6 +587,9 @@ type Events
     label bearLbl     = na
     int   bullLblRank = 0
     int   bearLblRank = 0
+    // Pine has no label.get_tooltip, so the merged hover text lives here.
+    string bullTip    = ""
+    string bearTip    = ""
 
 // One live fair value gap. bx is created by the first qualifying sweep and
 // extended by later ones.
@@ -1055,10 +1067,13 @@ unitEntry(Slot s, Events ev, int rank, string slotTf, float uh, float ul, float 
             ev.bullEntry := true
             string bullTxt = slotTf + (s.bull.sweep2 ? " ×2" : "")
             if na(ev.bullLbl)
-                ev.bullLbl := label.new(chartT(ut), na, bullTxt, xloc = xloc.bar_time, yloc = yloc.belowbar, style = entryStyle(true), color = bullEntryColorInput, textcolor = entryTextColor(true), size = labelSize)
+                ev.bullLbl := label.new(chartT(ut), na, bullTxt, xloc = xloc.bar_time, yloc = yloc.belowbar, style = entryStyle(true), color = bullEntryColorInput, textcolor = entryTextColor(true), size = labelSize, tooltip = entryTip(true, slotTf, s.bull.sweep2, s.bull.trigger, s.bull.extreme))
+                ev.bullTip := entryTip(true, slotTf, s.bull.sweep2, s.bull.trigger, s.bull.extreme)
                 ev.bullLblRank := rank
             else
                 label.set_text(ev.bullLbl, label.get_text(ev.bullLbl) + " · " + bullTxt)
+                ev.bullTip := ev.bullTip + "\n" + entryTip(true, slotTf, s.bull.sweep2, s.bull.trigger, s.bull.extreme)
+                label.set_tooltip(ev.bullLbl, ev.bullTip)
                 if rank > ev.bullLblRank
                     label.set_size(ev.bullLbl, labelSize)
                     ev.bullLblRank := rank
@@ -1076,10 +1091,13 @@ unitEntry(Slot s, Events ev, int rank, string slotTf, float uh, float ul, float 
             ev.bearEntry := true
             string bearTxt = slotTf + (s.bear.sweep2 ? " ×2" : "")
             if na(ev.bearLbl)
-                ev.bearLbl := label.new(chartT(ut), na, bearTxt, xloc = xloc.bar_time, yloc = yloc.abovebar, style = entryStyle(false), color = bearEntryColorInput, textcolor = entryTextColor(false), size = labelSize)
+                ev.bearLbl := label.new(chartT(ut), na, bearTxt, xloc = xloc.bar_time, yloc = yloc.abovebar, style = entryStyle(false), color = bearEntryColorInput, textcolor = entryTextColor(false), size = labelSize, tooltip = entryTip(false, slotTf, s.bear.sweep2, s.bear.trigger, s.bear.extreme))
+                ev.bearTip := entryTip(false, slotTf, s.bear.sweep2, s.bear.trigger, s.bear.extreme)
                 ev.bearLblRank := rank
             else
                 label.set_text(ev.bearLbl, label.get_text(ev.bearLbl) + " · " + bearTxt)
+                ev.bearTip := ev.bearTip + "\n" + entryTip(false, slotTf, s.bear.sweep2, s.bear.trigger, s.bear.extreme)
+                label.set_tooltip(ev.bearLbl, ev.bearTip)
                 if rank > ev.bearLblRank
                     label.set_size(ev.bearLbl, labelSize)
                     ev.bearLblRank := rank
