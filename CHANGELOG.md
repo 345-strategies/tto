@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.4 (2026-10-26)
+
+- Only the 15m slot is on by default. The 5m, 30m and 1H slots keep their timeframes and switch on in Settings.
+
+No change to detection, filters or alerts.
+
 ## 1.3.3 (2026-10-26)
 
 - Draw qualifying gaps is off by default. The gap filter still runs; turn the setting on to see the boxes.

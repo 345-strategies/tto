@@ -1,5 +1,5 @@
 //@version=6
-// TheStrat TTO: Triangle They Out - v1.3.3
+// TheStrat TTO: Triangle They Out - v1.3.4
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -35,7 +35,7 @@
 //              the flush extreme is broken and forgotten.
 //
 // TIMEFRAMES
-//   Four slots (default 5m 15m 30m 1H). Each runs its own detector and
+//   Four slots (5m 15m 30m 1H; only 15m is on by default). Each runs its own detector and
 //   fair value gaps on bars built from one stream at the finest slot. The
 //   chart timeframe is only zoom: every chart shows the same setups at the
 //   same times. A slot above 30m that sits strictly between the stream and
@@ -69,9 +69,9 @@
 //
 // Version history: CHANGELOG.md in the repository.
 
-indicator("TheStrat TTO: Triangle They Out - v1.3.3", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("TheStrat TTO: Triangle They Out - v1.3.4", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
-const string VERSION = "1.3.3"
+const string VERSION = "1.3.4"
 
 // ============================================================================
 // Inputs
@@ -88,15 +88,15 @@ const string grpAlert = "Alerts"
 const string grpDiag  = "Advanced - Diagnostics"
 
 const string tipSlot = "Each enabled slot watches one timeframe and runs its own TTO detector and fair value gaps on it. The chart timeframe is only zoom: every chart shows the same setups at the same times. Line width and triangle size grow with the slot's rank, finest thinnest. A slot above 30m that sits between the finest slot and the chart timeframe can't be built and is switched off; the status tag lists it."
-bool   s1OnInput = input.bool(true, "", inline = "s1", group = grpTF)
+bool   s1OnInput = input.bool(false, "", inline = "s1", group = grpTF)
 string s1TfInput = input.timeframe("5", "Slot 1", inline = "s1", group = grpTF, tooltip = tipSlot)
 bool   s2OnInput = input.bool(true, "", inline = "s2", group = grpTF)
 string s2TfInput = input.timeframe("15", "Slot 2", inline = "s2", group = grpTF, tooltip = tipSlot)
-bool   s3OnInput = input.bool(true, "", inline = "s3", group = grpTF)
+bool   s3OnInput = input.bool(false, "", inline = "s3", group = grpTF)
 string s3TfInput = input.timeframe("30", "Slot 3", inline = "s3", group = grpTF, tooltip = tipSlot)
-bool   s4OnInput = input.bool(true, "", inline = "s4", group = grpTF)
+bool   s4OnInput = input.bool(false, "", inline = "s4", group = grpTF)
 string s4TfInput = input.timeframe("60", "Slot 4", inline = "s4", group = grpTF, tooltip = tipSlot)
-bool   hideFinerInput = input.bool(true, "Hide slots finer than the chart", group = grpTF, tooltip = "On: a slot shows its marks and sends its alerts only on charts at or below its own timeframe. A 5m chart shows all four default slots, a 1H chart only the 1H slot, a Daily chart none. Hidden slots keep running, so whatever a slot does show is identical on every chart. Off: every slot shows on every chart.")
+bool   hideFinerInput = input.bool(true, "Hide slots finer than the chart", group = grpTF, tooltip = "On: a slot shows its marks and sends its alerts only on charts at or below its own timeframe. With the default 15m slot, a 15m or finer chart shows it and a 1H or Daily chart shows none. Hidden slots keep running, so whatever a slot does show is identical on every chart. Off: every slot shows on every chart.")
 
 bool showBullInput = input.bool(true, "Bullish TTOs", group = grpDet, tooltip = "A low swept and reclaimed; entry over the reclaiming bar's high, stop reference at the sweep low. Off switches the bullish detector off entirely.")
 bool showBearInput = input.bool(true, "Bearish TTOs", group = grpDet, tooltip = "A high swept and reclaimed; entry under the reclaiming bar's low, stop reference at the sweep high. Off switches the bearish detector off entirely.")

@@ -33,11 +33,11 @@ Bullish shown; bearish is the mirror.
 
 ## Timeframes
 
-Four slots, default 5m, 15m, 30m and 1H, each switchable and set to any timeframe. Each slot runs its own detector on bars built from one stream at the finest slot, so the chart timeframe is only zoom: a 5m chart and a 15m chart show the same setups at the same times. Line width and triangle size grow with the slot's rank.
+Four slots, set to 5m, 15m, 30m and 1H, each switchable and set to any timeframe. Only the 15m slot is on by default. Each slot runs its own detector on bars built from one stream at the finest slot, so the chart timeframe is only zoom: a 5m chart and a 15m chart show the same setups at the same times. Line width and triangle size grow with the slot's rank.
 
 A slot above 30m that sits strictly between the finest slot and the chart timeframe can't be built honestly (session anchors break hourly clock math), so it switches off. The status tag lists it.
 
-**Hide slots finer than the chart** (on by default): a slot shows its marks and sends its alerts only on charts at or below its own timeframe. A 5m chart shows all four default slots, a 1H chart only the 1H slot, a Daily chart none, so higher timeframes stay readable. Hidden slots keep running, so whatever a slot does show is identical on every chart. The status tag lists hidden slots.
+**Hide slots finer than the chart** (on by default): a slot shows its marks and sends its alerts only on charts at or below its own timeframe. With the default 15m slot, a 15m or finer chart shows it and a 1H or Daily chart shows none, so higher timeframes stay readable. Hidden slots keep running, so whatever a slot does show is identical on every chart. The status tag lists hidden slots.
 
 ## Filters
 
@@ -55,7 +55,7 @@ Create one alert on the indicator with the condition **Any alert() function call
 
 The status tag says which timing you have:
 
-- **alerts live**: the chart's bars are the finest slot (a 5m chart with a 5m slot). The entry alert fires the moment price crosses the trigger.
+- **alerts live**: the chart's bars are the finest slot (a 15m chart with the default 15m slot). The entry alert fires the moment price crosses the trigger.
 - **alerts bar close**: the chart is coarser. The alert comes at the chart bar's close.
 
 ## No repaint
