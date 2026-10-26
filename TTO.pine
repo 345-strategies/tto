@@ -1,5 +1,5 @@
 //@version=6
-// TheStrat TTO: Triangle They Out - v1.3.1
+// TheStrat TTO: Triangle They Out - v1.3.2
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -55,6 +55,8 @@
 //                   price above (below) both of its higher Direction
 //                   timeframes' opens, or a counter-trend break when
 //                   they disagree. Built in; ACT need not be loaded.
+//                   Off requests no ACT data at all, so the ladder's 3M and
+//                   12M timeframes never block TradingView's Pine Screener.
 //
 // NO REPAINT
 //   State advances on confirmed bars only. Entries are tested on every
@@ -67,9 +69,9 @@
 //
 // Version history: CHANGELOG.md in the repository.
 
-indicator("TheStrat TTO: Triangle They Out - v1.3.1", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("TheStrat TTO: Triangle They Out - v1.3.2", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
-const string VERSION = "1.3.1"
+const string VERSION = "1.3.2"
 
 // ============================================================================
 // Inputs
@@ -341,10 +343,14 @@ bool ladder_ok = e_sec <= timeframe.in_seconds(tf_s1)
 
 f_eff(string tf) => timeframe.in_seconds(tf) >= e_sec ? tf : timeframe.period
 
-string tf_s1_e = f_eff(tf_s1)
-string tf_s2_e = f_eff(tf_s2)
-string tf_d1_e = f_eff(tf_d1)
-string tf_d2_e = f_eff(tf_d2)
+// With the filter Off, ACT's ladder is never read, so it requests nothing and
+// every rung falls back to the chart timeframe. Above 1H the Auto ladder asks
+// for 3M and 12M, which Pine Screener refuses for every symbol.
+bool actOn = actFilterInput != "Off"
+string tf_s1_e = actOn ? f_eff(tf_s1) : timeframe.period
+string tf_s2_e = actOn ? f_eff(tf_s2) : timeframe.period
+string tf_d1_e = actOn ? f_eff(tf_d1) : timeframe.period
+string tf_d2_e = actOn ? f_eff(tf_d2) : timeframe.period
 
 f_classify_full(float c1_h, float c1_l, float c1_o, float c1_c,
            float cc_h, float cc_l, float cc_o, float cc_c) =>
@@ -431,7 +437,7 @@ f_served(string tf, bool allowed) => allowed and timeframe.in_seconds(tf) >= 864
 
 f_rung(string tf) =>
     bool is_new = f_is_new(tf)
-    bool served = f_served(tf, serve_chart)
+    bool served = actOn and f_served(tf, serve_chart)
     [lo, lh, ll, lc, lph, lpl, lpo, lpc, lp2h, lp2l, lt] = f_htf_bar(is_new, open, high, low, close)
     float so = na
     float sph = na
@@ -521,7 +527,7 @@ int actCode = act_aside or trend_dir == 0 ? 0 : trend_dir * (is_ct ? 2 : 1)
 int actNow  = actCode
 int actPrev = nz(actCode[1])
 
-bool actActive = actFilterInput != "Off" and ladder_ok
+bool actActive = actOn and ladder_ok
 
 actPass(bool isBull, int code) =>
     bool ok = true

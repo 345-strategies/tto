@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.2 (2026-10-26)
+
+- With the ACT filter off, TTO requests no ACT data. Above 1H the Auto ACT ladder asked for 3M and 12M bars even with the filter off, so TradingView's Pine Screener refused every symbol on 2H, 4H, daily and weekly scans. They now run with default settings.
+
+No change to detection, filters or alerts.
+
 ## 1.3.1 (2026-10-23)
 
 - Hovering an entry marker explains it: timeframe, direction, trigger, stop reference, and what x2 means.
