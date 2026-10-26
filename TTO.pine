@@ -1,5 +1,5 @@
 //@version=6
-// TheStrat TTO: Triangle They Out - v1.3.2
+// TheStrat TTO: Triangle They Out - v1.3.3
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
 // License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -69,9 +69,9 @@
 //
 // Version history: CHANGELOG.md in the repository.
 
-indicator("TheStrat TTO: Triangle They Out - v1.3.2", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
+indicator("TheStrat TTO: Triangle They Out - v1.3.3", shorttitle = "TTO", overlay = true, max_lines_count = 500, max_labels_count = 500, max_boxes_count = 500)
 
-const string VERSION = "1.3.2"
+const string VERSION = "1.3.3"
 
 // ============================================================================
 // Inputs
@@ -106,7 +106,7 @@ bool showYoungResweepsInput = input.bool(true, "Show quick re-sweeps", group = g
 
 bool  fvgOnInput        = input.bool(true, "Only show TTOs inside a fair value gap", group = grpGap, tooltip = "A setup shows only when its sweep extreme sits inside a live same-direction fair value gap on its own slot or a higher one, never a lower one. A gap dies the moment price trades fully through it. Off: every setup shows.")
 float fvgThresholdInput = input.float(0, "Minimum gap size %", minval = 0, step = 0.05, group = grpGap, tooltip = "Gap height as a percent of price. 0 keeps every gap.")
-bool  fvgBoxInput       = input.bool(true, "Draw qualifying gaps", group = grpGap, active = fvgOnInput, tooltip = "Each qualifying slot draws its gap as a soft box labeled with the slot timeframe, extended to the latest qualifying sweep. Stacked boxes = gaps nested across timeframes.")
+bool  fvgBoxInput       = input.bool(false, "Draw qualifying gaps", group = grpGap, active = fvgOnInput, tooltip = "Each qualifying slot draws its gap as a soft box labeled with the slot timeframe, extended to the latest qualifying sweep. Stacked boxes = gaps nested across timeframes.")
 bool  fvgSessionInput   = input.bool(false, "Ignore gaps across days", group = grpGap, tooltip = "On skips gaps whose three bars don't fall on the same calendar day in the exchange time zone. Off (default): overnight and weekend gaps count.")
 
 bool   tfcOnInput  = input.bool(true, "Filter by timeframe continuity", group = grpTfc, tooltip = "Bullish setups show only while every enabled timeframe below trades above its open; bearish only while every one is at or below it. Checked at the sweep and again at the entry. Timeframes lower than the chart are skipped.")

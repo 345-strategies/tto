@@ -16,7 +16,7 @@ It is display and alerts only: no orders, no strategy. It shows where the setup 
 | Dotted green / red line | An armed setup's trigger. It runs right until the setup enters or dies; a faint end means it died untraded |
 | Green / red triangle | Entry: price traded through the trigger. The text is the slot timeframe (`5m`, `15m`, `1H`). Hover it for the trigger, the stop reference and what `x2` means |
 | `x2` on the triangle | Sweep of a sweep: the swept level was itself an older sweep extreme |
-| Soft green / red box | The fair value gap that qualified the setup, labeled with its timeframe. Stacked boxes = gaps nested across timeframes |
+| Soft green / red box | The fair value gap that qualified the setup, labeled with its timeframe. Stacked boxes = gaps nested across timeframes. Off by default: turn on Draw qualifying gaps |
 
 Green and red always mean bull and bear, never good and bad. The entry marker can be a triangle, arrow, label, diamond or circle, at any size, under Style.
 
